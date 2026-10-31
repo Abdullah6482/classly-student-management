@@ -28,6 +28,7 @@ yarn-error.log*
 
 # Local environment and keys
 .env*
+!.env.example
 .dev.vars*
 *.pem
 
@@ -51,6 +52,13 @@ yarn-error.log*
 *.key
 *.p12
 *.pfx
+*.ppk
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+id_ecdsa
+id_dsa
 *.db
 *.sqlite
 *.sqlite3
