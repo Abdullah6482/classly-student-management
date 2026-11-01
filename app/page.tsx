@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
-import { BookOpen, Check, ChevronDown, GraduationCap, LayoutDashboard, MoreHorizontal, Pencil, Plus, Search, Trash2, UserRoundCheck, Users, X } from "lucide-react";
+import { BookOpen, Check, ChevronDown, GraduationCap, LayoutDashboard, LogOut, MoreHorizontal, Pencil, Plus, Search, Trash2, UserRoundCheck, Users, X } from "lucide-react";
 
 type Status = "Active" | "On leave" | "Graduated";
 type Student = { id: number; studentId: string; fullName: string; email: string; phone: string; course: string; year: number; gpa: number; status: Status; joinedDate: string; createdAt: string; updatedAt: string };
@@ -14,6 +14,12 @@ const statusStyles: Record<Status, string> = { Active: "bg-emerald-50 text-emera
 function initials(name: string) { return name.split(" ").filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase(); }
 
 export default function Home() {
+  const [authStatus, setAuthStatus] = useState<"checking" | "signed-out" | "signed-in" | "unavailable">("checking");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
   const [students, setStudents] = useState<Student[]>([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("All");
@@ -33,8 +39,14 @@ export default function Home() {
       const params = new URLSearchParams();
       if (query) params.set("q", query);
       if (status !== "All") params.set("status", status);
-      const response = await fetch(`/api/students?${params}`);
+      const response = await fetch(`/api/students?${params}`, { cache: "no-store", credentials: "same-origin" });
       const data = await response.json() as { students?: Student[]; error?: string };
+      if (response.status === 401) {
+        setStudents([]);
+        setAuthMessage("Your session expired. Sign in again to continue.");
+        setAuthStatus("signed-out");
+        return;
+      }
       if (!response.ok) throw new Error(data.error);
       setStudents(data.students ?? []);
       setError("");
@@ -42,7 +54,35 @@ export default function Home() {
     finally { setLoading(false); }
   }, [query, status]);
 
-  useEffect(() => { const timer = setTimeout(load, 220); return () => clearTimeout(timer); }, [load]);
+  useEffect(() => {
+    let active = true;
+    fetch("/api/auth/session", { cache: "no-store", credentials: "same-origin" })
+      .then(async (response) => {
+        const data = await response.json() as { authenticated?: boolean; email?: string; error?: string };
+        if (!active) return;
+        if (response.status === 503) {
+          setAuthMessage("Administrator sign-in is unavailable. Configure the required Worker secrets before using Classly.");
+          setAuthStatus("unavailable");
+        } else if (response.ok && data.authenticated && data.email) {
+          setAuthEmail(data.email);
+          setAuthStatus("signed-in");
+        } else {
+          setAuthStatus("signed-out");
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setAuthMessage("Unable to check your sign-in. Please refresh the page.");
+          setAuthStatus("unavailable");
+        }
+      });
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    if (authStatus !== "signed-in") return;
+    const timer = setTimeout(load, 220);
+    return () => clearTimeout(timer);
+  }, [authStatus, load]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(""), 2800); return () => clearTimeout(timer); }, [toast]);
 
   const metrics = useMemo(() => ({ total: students.length, active: students.filter((s) => s.status === "Active").length, courses: new Set(students.map((s) => s.course)).size, average: students.length ? (students.reduce((sum, s) => sum + s.gpa, 0) / students.length).toFixed(2) : "0.00" }), [students]);
@@ -50,6 +90,43 @@ export default function Home() {
   function openCreate() { setEditing(null); setForm({ ...emptyForm, studentId: `STU-${new Date().getFullYear()}-${String(Math.max(1, students.length + 1)).padStart(3, "0")}` }); setError(""); setModalOpen(true); }
   function openEdit(student: Student) { setEditing(student); setForm({ studentId: student.studentId, fullName: student.fullName, email: student.email, phone: student.phone, course: student.course, year: student.year, gpa: student.gpa, status: student.status, joinedDate: student.joinedDate }); setError(""); setMenu(null); setModalOpen(true); }
   function closeModal() { if (!saving) { setModalOpen(false); setEditing(null); setError(""); } }
+
+  async function signIn(event: FormEvent) {
+    event.preventDefault();
+    setAuthBusy(true);
+    setAuthMessage("");
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+      });
+      const data = await response.json() as { email?: string; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Unable to sign in.");
+      setAuthEmail(data.email ?? loginEmail);
+      setLoginPassword("");
+      setAuthStatus("signed-in");
+    } catch (err) {
+      setAuthMessage(err instanceof Error ? err.message : "Unable to sign in.");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signOut() {
+    try {
+      const response = await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+      if (!response.ok) throw new Error("Unable to sign out. Please try again.");
+      setStudents([]);
+      setAuthEmail("");
+      setLoginPassword("");
+      setAuthMessage("");
+      setAuthStatus("signed-out");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to sign out.");
+    }
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault(); setSaving(true); setError("");
@@ -72,6 +149,30 @@ export default function Home() {
     } catch (err) { setError(err instanceof Error ? err.message : "Unable to delete student."); setDeleteTarget(null); }
   }
 
+  if (authStatus !== "signed-in") {
+    return (
+      <main className="grid min-h-screen place-items-center bg-[#f6f7fb] px-5 py-10 text-slate-900">
+        <section className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-8 shadow-xl">
+          <div className="mb-7 flex items-center gap-3">
+            <div className="grid h-11 w-11 place-items-center rounded-xl bg-indigo-600 text-white"><GraduationCap size={24}/></div>
+            <div><p className="text-xl font-bold">Classly</p><p className="text-xs text-slate-500">Administrator sign-in</p></div>
+          </div>
+          {authStatus === "checking" ? <p role="status" className="text-sm text-slate-500">Checking your sign-in…</p> : authStatus === "unavailable" ? (
+            <div role="alert" className="rounded-xl bg-amber-50 p-4 text-sm leading-6 text-amber-900">{authMessage || "Administrator sign-in is not configured for this deployment."}</div>
+          ) : (
+            <form onSubmit={signIn} className="space-y-5">
+              <p className="text-sm text-slate-600">Sign in with the administrator account configured for this deployment.</p>
+              <Field label="Administrator email"><input required type="email" autoComplete="username" value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} /></Field>
+              <Field label="Password"><input required type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} /></Field>
+              {authMessage && <p role="alert" className="rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700">{authMessage}</p>}
+              <button disabled={authBusy} className="h-11 w-full rounded-xl bg-indigo-600 px-5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60">{authBusy ? "Signing in…" : "Sign in"}</button>
+            </form>
+          )}
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-[#f6f7fb] text-slate-900">
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-[252px] flex-col border-r border-slate-200/80 bg-[#111827] px-4 py-6 text-white lg:flex">
@@ -81,7 +182,7 @@ export default function Home() {
       </aside>
 
       <section className="lg:pl-[252px]">
-        <header className="sticky top-0 z-20 flex h-[72px] items-center justify-between border-b border-slate-200/80 bg-white/90 px-5 backdrop-blur md:px-8"><div className="flex items-center gap-3 lg:hidden"><div className="grid h-9 w-9 place-items-center rounded-xl bg-indigo-600 text-white"><GraduationCap size={21}/></div><span className="font-bold">Classly</span></div><div className="hidden text-sm text-slate-500 lg:block">Student records / <span className="font-medium text-slate-900">Overview</span></div><div className="flex items-center gap-3"><div className="hidden text-right sm:block"><p className="text-sm font-semibold">Auspify Intern</p><p className="text-xs text-slate-500">Administrator</p></div><div className="grid h-10 w-10 place-items-center rounded-full bg-indigo-100 text-sm font-bold text-indigo-700">AI</div></div></header>
+        <header className="sticky top-0 z-20 flex h-[72px] items-center justify-between border-b border-slate-200/80 bg-white/90 px-5 backdrop-blur md:px-8"><div className="flex items-center gap-3 lg:hidden"><div className="grid h-9 w-9 place-items-center rounded-xl bg-indigo-600 text-white"><GraduationCap size={21}/></div><span className="font-bold">Classly</span></div><div className="hidden text-sm text-slate-500 lg:block">Student records / <span className="font-medium text-slate-900">Overview</span></div><div className="flex items-center gap-3"><div className="hidden text-right sm:block"><p className="text-sm font-semibold">{authEmail}</p><p className="text-xs text-slate-500">Administrator</p></div><div className="grid h-10 w-10 place-items-center rounded-full bg-indigo-100 text-sm font-bold text-indigo-700">{initials(authEmail)}</div><button onClick={signOut} aria-label="Sign out" title="Sign out" className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900"><LogOut size={18}/></button></div></header>
 
         <div className="mx-auto max-w-[1440px] px-5 py-8 md:px-8 md:py-10">
           <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end"><div><p className="mb-2 text-xs font-bold uppercase tracking-[0.16em] text-indigo-600">Student administration</p><h1 className="text-3xl font-bold tracking-[-0.03em] md:text-4xl">Good morning, Admin</h1><p className="mt-2 text-sm text-slate-500">Here’s what’s happening across your student community.</p></div><button onClick={openCreate} className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-5 text-sm font-semibold text-white shadow-[0_8px_24px_rgba(79,70,229,.22)] transition hover:bg-indigo-700"><Plus size={18}/>Add student</button></div>

@@ -1,8 +1,14 @@
 import { and, asc, eq, like, or } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { students } from "../../../db/schema";
+import { getAuthConfig } from "../../../lib/auth-runtime";
+import { withAdmin } from "../../../lib/auth";
 
 const statuses = ["Active", "On leave", "Graduated"] as const;
+
+function json(body: unknown, status = 200) {
+  return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
+}
 
 function clean(payload: Record<string, unknown>) {
   return {
@@ -38,7 +44,7 @@ function message(error: unknown) {
   return "We couldn't complete that request. Please try again.";
 }
 
-export async function GET(request: Request) {
+export const GET = withAdmin(async (request) => {
   try {
     const { searchParams } = new URL(request.url);
     const query = searchParams.get("q")?.trim() ?? "";
@@ -50,48 +56,48 @@ export async function GET(request: Request) {
     }
     if (status !== "All" && statuses.includes(status as (typeof statuses)[number])) filters.push(eq(students.status, status as (typeof statuses)[number]));
     const rows = await getDb().select().from(students).where(filters.length ? and(...filters) : undefined).orderBy(asc(students.fullName));
-    return Response.json({ students: rows });
+    return json({ students: rows });
   } catch (error) {
-    return Response.json({ error: message(error) }, { status: 500 });
+    return json({ error: message(error) }, 500);
   }
-}
+}, getAuthConfig);
 
-export async function POST(request: Request) {
+export const POST = withAdmin(async (request) => {
   try {
     const value = clean((await request.json()) as Record<string, unknown>);
     const error = validate(value);
-    if (error) return Response.json({ error }, { status: 400 });
+    if (error) return json({ error }, 400);
     const [student] = await getDb().insert(students).values(value).returning();
-    return Response.json({ student }, { status: 201 });
+    return json({ student }, 201);
   } catch (error) {
-    return Response.json({ error: message(error) }, { status: 409 });
+    return json({ error: message(error) }, 409);
   }
-}
+}, getAuthConfig);
 
-export async function PUT(request: Request) {
+export const PUT = withAdmin(async (request) => {
   try {
     const body = (await request.json()) as Record<string, unknown>;
     const id = Number(body.id);
-    if (!Number.isInteger(id)) return Response.json({ error: "Invalid student record." }, { status: 400 });
+    if (!Number.isInteger(id)) return json({ error: "Invalid student record." }, 400);
     const value = clean(body);
     const error = validate(value);
-    if (error) return Response.json({ error }, { status: 400 });
+    if (error) return json({ error }, 400);
     const [student] = await getDb().update(students).set({ ...value, updatedAt: new Date().toISOString() }).where(eq(students.id, id)).returning();
-    if (!student) return Response.json({ error: "Student not found." }, { status: 404 });
-    return Response.json({ student });
+    if (!student) return json({ error: "Student not found." }, 404);
+    return json({ student });
   } catch (error) {
-    return Response.json({ error: message(error) }, { status: 409 });
+    return json({ error: message(error) }, 409);
   }
-}
+}, getAuthConfig);
 
-export async function DELETE(request: Request) {
+export const DELETE = withAdmin(async (request) => {
   try {
     const id = Number(new URL(request.url).searchParams.get("id"));
-    if (!Number.isInteger(id)) return Response.json({ error: "Invalid student record." }, { status: 400 });
+    if (!Number.isInteger(id)) return json({ error: "Invalid student record." }, 400);
     const [student] = await getDb().delete(students).where(eq(students.id, id)).returning();
-    if (!student) return Response.json({ error: "Student not found." }, { status: 404 });
-    return Response.json({ student });
+    if (!student) return json({ error: "Student not found." }, 404);
+    return json({ student });
   } catch (error) {
-    return Response.json({ error: message(error) }, { status: 500 });
+    return json({ error: message(error) }, 500);
   }
-}
+}, getAuthConfig);
